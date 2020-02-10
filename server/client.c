@@ -88,6 +88,8 @@ serverCreateListeners(const char *host,	/* I - Hostname, IP address, or NULL for
   server_listener_t	*lis;		/* New listener */
 
 
+  httpInitialize();
+
   if (host && !strcmp(host, "*"))
     host = NULL;
 
