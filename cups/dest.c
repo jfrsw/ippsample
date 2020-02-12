@@ -607,6 +607,8 @@ cupsConnectDest(
 
   DEBUG_printf(("cupsConnectDest(dest=%p, flags=0x%x, msec=%d, cancel=%p(%d), resource=\"%s\", resourcesize=" CUPS_LLFMT ", cb=%p, user_data=%p)", (void *)dest, flags, msec, (void *)cancel, cancel ? *cancel : -1, resource, CUPS_LLCAST resourcesize, (void *)cb, user_data));
 
+  httpInitialize();
+
  /*
   * Range check input...
   */
