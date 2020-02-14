@@ -21,44 +21,6 @@
 #ifndef _WIN32
     #include <unistd.h>
 #endif /* !_WIN32 */
-
-#ifdef _WIN32
-/* Replace gettimeofday() on Windows */
-	#define WIN32_LEAN_AND_MEAN
-	#include <Windows.h>
-	#include <stdint.h> // portable: uint64_t   MSVC: __int64 
-
-	// MSVC defines this in winsock2.h!?
-	/*
-	typedef struct timeval {
-		long tv_sec;
-		long tv_usec;
-	} timeval;
-	*/
-	#include <WinSock2.h>
-
-	int gettimeofday(struct timeval * tp, struct timezone * tzp)
-	{
-		// Note: some broken versions only have 8 trailing zero's, the correct epoch has 9 trailing zero's
-		// This magic number is the number of 100 nanosecond intervals since January 1, 1601 (UTC)
-		// until 00:00:00 January 1, 1970 
-		static const uint64_t EPOCH = ((uint64_t)116444736000000000ULL);
-
-		SYSTEMTIME  system_time;
-		FILETIME    file_time;
-		uint64_t    time;
-
-		GetSystemTime(&system_time);
-		SystemTimeToFileTime(&system_time, &file_time);
-		time = ((uint64_t)file_time.dwLowDateTime);
-		time += ((uint64_t)file_time.dwHighDateTime) << 32;
-
-		tp->tv_sec = (long)((time - EPOCH) / 10000000L);
-		tp->tv_usec = (long)(system_time.wMilliseconds * 1000);
-		return 0;
-	}
-#endif /* _WIN32 */
-
 #include <fcntl.h>
 #include <cups/cups.h>
 #include <cups/thread-private.h>
@@ -939,8 +901,14 @@ plogf(proxy_job_t *pjob,			/* I - Proxy job, if any */
   struct tm	curdate;		/* Current date and time */
 
 
+#ifdef _WIN32
+  _cups_gettimeofday(&curtime, NULL);
+  time_t tv_sec = (time_t)curtime.tv_sec;
+  gmtime_s(&curdate, &tv_sec);
+#else
   gettimeofday(&curtime, NULL);
   gmtime_r(&curtime.tv_sec, &curdate);
+#endif /* _WIN32 */
 
   if (pjob)
     snprintf(temp, sizeof(temp), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ  [Job %d] %s\n", curdate.tm_year + 1900, curdate.tm_mon + 1, curdate.tm_mday, curdate.tm_hour, curdate.tm_min, curdate.tm_sec, (int)curtime.tv_usec / 1000, pjob->remote_job_id, message);
