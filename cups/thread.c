@@ -16,6 +16,41 @@
 
 
 #if defined(HAVE_PTHREAD_H)
+
+#	if defined(_WIN32)
+/* This part taken from Linux time.h */
+ 
+ /*
+  * The IDs of the various system clocks (for POSIX.1b interval timers):
+  */
+#define CLOCK_REALTIME			0
+#define CLOCK_MONOTONIC			1
+#define CLOCK_PROCESS_CPUTIME_ID	2
+#define CLOCK_THREAD_CPUTIME_ID		3
+#define CLOCK_MONOTONIC_RAW		4
+#define CLOCK_REALTIME_COARSE		5
+#define CLOCK_MONOTONIC_COARSE		6
+#define CLOCK_BOOTTIME			7
+#define CLOCK_REALTIME_ALARM		8
+#define CLOCK_BOOTTIME_ALARM		9
+  /*
+   * The driver implementing this got removed. The clock ID is kept as a
+   * place holder. Do not reuse!
+   */
+#define CLOCK_SGI_CYCLE			10
+#define CLOCK_TAI			11
+
+int clock_gettime(int clockId, struct timespec *spec)      //C-file part
+{
+	__int64 wintime; GetSystemTimeAsFileTime((FILETIME*)&wintime);
+	wintime -= 116444736000000000i64;  //1jan1601 to 1jan1970
+	spec->tv_sec = wintime / 10000000i64;           //seconds
+	spec->tv_nsec = wintime % 10000000i64 * 100;      //nano-seconds
+	return 0;
+}
+#	endif _WIN32
+
+
 /*
  * '_cupsCondBroadcast()' - Wake up waiting threads.
  */
@@ -169,7 +204,15 @@ _cupsThreadCreate(
   pthread_t thread;
 
   if (pthread_create(&thread, NULL, (void *(*)(void *))func, arg))
-    return (0);
+#if defined(PTW32_VERSION)
+  {
+		thread.p = NULL;
+		thread.x = 0;
+		return(thread);
+  }
+#else
+		return (0);
+#endif
   else
     return (thread);
 }

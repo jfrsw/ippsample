@@ -373,9 +373,9 @@ typedef unsigned long useconds_t;
 /*
  * Do we have pthread support?
  */
-
+/* Using pthreads4w*/
 /* #undef HAVE_PTHREAD_H */
-
+#define HAVE_PTHREAD_H
 
 /*
  * Do we have CoreFoundation public headers?
