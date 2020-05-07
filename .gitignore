@@ -33,6 +33,7 @@ autom4te.cache
 /vcnet/.vs
 /vcnet/packages
 /vcnet/x64
+/vcnet/pthreads4w-code-9808f0b151e6c6efe2d57f3b54a1fb9a19d1eb88
 /xcode/DerivedData
 xcuserdata
 *.dSYM
