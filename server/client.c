@@ -890,7 +890,7 @@ serverRun(void)
           _cups_thread_t t = _cupsThreadCreate((_cups_thread_func_t)serverProcessClient, client);
 
 #if defined(PTW32_VERSION)
-		  if (t.x)
+		  if (t.p)
 #else
 		  if (t)
 #endif
