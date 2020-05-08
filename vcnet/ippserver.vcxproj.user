@@ -5,4 +5,9 @@
     <LocalDebuggerWorkingDirectory>$(ProjectDir)\..\</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LocalDebuggerCommandArguments>-vvv -C test --no-dns-sd</LocalDebuggerCommandArguments>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)\..\</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
 </Project>
