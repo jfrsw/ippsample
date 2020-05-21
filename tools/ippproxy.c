@@ -1770,6 +1770,8 @@ send_document(proxy_info_t *info,	/* I - Proxy information */
       ippDelete(response);
     }
 
+    pjob->local_job_state = job_state;
+
     if (pjob->remote_job_state == IPP_JSTATE_CANCELED)
     {
      /*

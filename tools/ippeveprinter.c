@@ -5,7 +5,7 @@
  * Copyright © 2010-2019 by Apple Inc.
  *
  * Licensed under Apache License v2.0.  See the file "LICENSE" for more
- * information.º
+ * information.
  *
  * Note: This program began life as the "ippserver" sample code that first
  * appeared in CUPS 1.4.  The name has been changed in order to distinguish it
@@ -50,7 +50,9 @@ extern char **environ;
 #elif defined(HAVE_AVAHI)
 #  include <avahi-client/client.h>
 #  include <avahi-client/publish.h>
+#  include <avahi-common/alternative.h>
 #  include <avahi-common/error.h>
+#  include <avahi-common/malloc.h>
 #  include <avahi-common/thread-watch.h>
 #endif /* HAVE_DNSSD */
 
@@ -182,11 +184,17 @@ typedef struct ippeve_printer_s		/**** Printer data ****/
   /* TODO: One IPv4 and one IPv6 listener are really not sufficient */
   int			ipv4,		/* IPv4 listener */
 			ipv6;		/* IPv6 listener */
-  ippeve_srv_t		ipp_ref,	/* Bonjour IPP service */
-			ipps_ref,	/* Bonjour IPPS service */
-			http_ref,	/* Bonjour HTTP service */
-			printer_ref;	/* Bonjour LPD service */
-  char			*dnssd_name,	/* printer-dnssd-name */
+#ifdef HAVE_DNSSD
+  ippeve_srv_t		ipp_ref,	/* DNS-SD IPP service */
+			ipps_ref,	/* DNS-SD IPPS service */
+			http_ref,	/* DNS-SD HTTP service */
+			printer_ref;	/* DNS-SD LPD service */
+#elif defined(HAVE_AVAHI)
+  ippeve_srv_t		dnssd_ref;	/* DNS-SD services */
+#endif /* HAVE_DNSSD */
+  char			*dnssd_subtypes;/* DNS-SD subtypes */
+  int			dnssd_collision;/* Name collision? */
+  char			*dnssd_name,	/* printer-dns-sd-name */
 			*name,		/* printer-name */
 			*icons[3],	/* Icon filenames */
 			*strings,	/* Strings filename */
@@ -287,6 +295,8 @@ static int		filter_cb(ippeve_filter_t *filter, ipp_t *dst, ipp_attribute_t *attr
 static ippeve_job_t	*find_job(ippeve_client_t *client);
 static void		finish_document_data(ippeve_client_t *client, ippeve_job_t *job);
 static void		finish_document_uri(ippeve_client_t *client, ippeve_job_t *job);
+static void		flush_document_data(ippeve_client_t *client);
+static int		have_document_data(ippeve_client_t *client);
 static void		html_escape(ippeve_client_t *client, const char *s, size_t slen);
 static void		html_footer(ippeve_client_t *client);
 static void		html_header(ippeve_client_t *client, const char *title, int refresh);
@@ -319,7 +329,7 @@ static int		process_http(ippeve_client_t *client);
 static int		process_ipp(ippeve_client_t *client);
 static void		*process_job(ippeve_job_t *job);
 static void		process_state_message(ippeve_job_t *job, char *message);
-static int		register_printer(ippeve_printer_t *printer, const char *subtypes);
+static int		register_printer(ippeve_printer_t *printer);
 static int		respond_http(ippeve_client_t *client, http_status_t code, const char *content_coding, const char *type, size_t length);
 static void		respond_ipp(ippeve_client_t *client, ipp_status_t status, const char *message, ...) _CUPS_FORMAT(3, 4);
 static void		respond_unsupported(ippeve_client_t *client, ipp_attribute_t *attr);
@@ -1417,7 +1427,7 @@ create_printer(
     const char   *icons,		/* I - printer-icons */
     const char   *strings,		/* I - printer-strings-uri */
     cups_array_t *docformats,		/* I - document-format-supported */
-    const char   *subtypes,		/* I - Bonjour service subtype(s) */
+    const char   *subtypes,		/* I - DNS-SD service subtype(s) */
     const char   *directory,		/* I - Spool directory */
     const char   *command,		/* I - Command to run on job files, if any */
     const char   *device_uri,		/* I - Output device, if any */
@@ -1654,24 +1664,25 @@ create_printer(
     return (NULL);
   }
 
-  printer->ipv4          = -1;
-  printer->ipv6          = -1;
-  printer->name          = strdup(name);
-  printer->dnssd_name    = strdup(name);
-  printer->command       = command ? strdup(command) : NULL;
-  printer->device_uri    = device_uri ? strdup(device_uri) : NULL;
-  printer->output_format = output_format ? strdup(output_format) : NULL;
-  printer->directory     = strdup(directory);
-  printer->icons[0]      = icons ? strdup(icons) : NULL;
-  printer->strings       = strings ? strdup(strings) : NULL;
-  printer->port          = serverport;
-  printer->start_time    = time(NULL);
-  printer->config_time   = printer->start_time;
-  printer->state         = IPP_PSTATE_IDLE;
-  printer->state_reasons = IPPEVE_PREASON_NONE;
-  printer->state_time    = printer->start_time;
-  printer->jobs          = cupsArrayNew((cups_array_func_t)compare_jobs, NULL);
-  printer->next_job_id   = 1;
+  printer->ipv4           = -1;
+  printer->ipv6           = -1;
+  printer->name           = strdup(name);
+  printer->dnssd_name     = strdup(name);
+  printer->dnssd_subtypes = subtypes ? strdup(subtypes) : NULL;
+  printer->command        = command ? strdup(command) : NULL;
+  printer->device_uri     = device_uri ? strdup(device_uri) : NULL;
+  printer->output_format  = output_format ? strdup(output_format) : NULL;
+  printer->directory      = strdup(directory);
+  printer->icons[0]       = icons ? strdup(icons) : NULL;
+  printer->strings        = strings ? strdup(strings) : NULL;
+  printer->port           = serverport;
+  printer->start_time     = time(NULL);
+  printer->config_time    = printer->start_time;
+  printer->state          = IPP_PSTATE_IDLE;
+  printer->state_reasons  = IPPEVE_PREASON_NONE;
+  printer->state_time     = printer->start_time;
+  printer->jobs           = cupsArrayNew((cups_array_func_t)compare_jobs, NULL);
+  printer->next_job_id    = 1;
 
   if (printer->icons[0])
   {
@@ -1702,6 +1713,14 @@ create_printer(
   else
   {
     char	temp[1024];		/* Temporary string */
+
+#ifdef HAVE_AVAHI
+    const char *avahi_name = avahi_client_get_host_name_fqdn(DNSSDClient);
+
+    if (avahi_name)
+      printer->hostname = strdup(avahi_name);
+    else
+#endif /* HAVE_AVAHI */
 
     printer->hostname = strdup(httpGetHostname(NULL, temp, sizeof(temp)));
   }
@@ -1950,10 +1969,10 @@ create_printer(
   debug_attributes("Printer", printer->attrs, 0);
 
  /*
-  * Register the printer with Bonjour...
+  * Register the printer with DNS-SD...
   */
 
-  if (!register_printer(printer, subtypes))
+  if (!register_printer(printer))
     goto bad_printer;
 
  /*
@@ -2109,14 +2128,8 @@ delete_printer(ippeve_printer_t *printer)	/* I - Printer */
 #elif defined(HAVE_AVAHI)
   avahi_threaded_poll_lock(DNSSDMaster);
 
-  if (printer->printer_ref)
-    avahi_entry_group_free(printer->printer_ref);
-  if (printer->ipp_ref)
-    avahi_entry_group_free(printer->ipp_ref);
-  if (printer->ipps_ref)
-    avahi_entry_group_free(printer->ipps_ref);
-  if (printer->http_ref)
-    avahi_entry_group_free(printer->http_ref);
+  if (printer->dnssd_ref)
+    avahi_entry_group_free(printer->dnssd_ref);
 
   avahi_threaded_poll_unlock(DNSSDMaster);
 #endif /* HAVE_DNSSD */
@@ -2151,7 +2164,7 @@ delete_printer(ippeve_printer_t *printer)	/* I - Printer */
 
 #ifdef HAVE_DNSSD
 /*
- * 'dnssd_callback()' - Handle Bonjour registration events.
+ * 'dnssd_callback()' - Handle DNS-SD registration events.
  */
 
 static void DNSSD_API
@@ -2162,32 +2175,28 @@ dnssd_callback(
     const char          *name,		/* I - Service name */
     const char          *regtype,	/* I - Service type */
     const char          *domain,	/* I - Domain for service */
-    ippeve_printer_t      *printer)	/* I - Printer */
+    ippeve_printer_t    *printer)	/* I - Printer */
 {
   (void)sdRef;
   (void)flags;
   (void)domain;
 
-  if (errorCode)
+  if (errorCode == kDNSServiceErr_NameConflict)
+  {
+    fputs("DNS-SD service name collision detected.\n", stderr);
+    printer->dnssd_collision = 1;
+  }
+  else if (errorCode)
   {
     fprintf(stderr, "DNSServiceRegister for %s failed with error %d.\n", regtype, (int)errorCode);
     return;
-  }
-  else if (strcasecmp(name, printer->dnssd_name))
-  {
-    if (Verbosity)
-      fprintf(stderr, "Now using DNS-SD service name \"%s\".\n", name);
-
-    /* No lock needed since only the main thread accesses/changes this */
-    free(printer->dnssd_name);
-    printer->dnssd_name = strdup(name);
   }
 }
 
 
 #elif defined(HAVE_AVAHI)
 /*
- * 'dnssd_callback()' - Handle Bonjour registration events.
+ * 'dnssd_callback()' - Handle DNS-SD registration events.
  */
 
 static void
@@ -2196,9 +2205,17 @@ dnssd_callback(
     AvahiEntryGroupState state,		/* I - Registration state */
     void                 *context)	/* I - Printer */
 {
+  ippeve_printer_t *printer = (ippeve_printer_t *)context;
+ 					/* Printer */
+
+
   (void)srv;
-  (void)state;
-  (void)context;
+
+  if (state == AVAHI_ENTRY_GROUP_COLLISION)
+  {
+    fputs("DNS-SD service name collision detected.\n", stderr);
+    printer->dnssd_collision = 1;
+  }
 }
 
 
@@ -2212,10 +2229,8 @@ static void
 dnssd_client_cb(
     AvahiClient      *c,		/* I - Client */
     AvahiClientState state,		/* I - Current state */
-    void             *userdata)		/* I - User data (unused) */
+    void             *userdata)		/* I - User data (printer) */
 {
-  (void)userdata;
-
   if (!c)
     return;
 
@@ -2247,7 +2262,7 @@ dnssd_init(void)
 #ifdef HAVE_DNSSD
   if (DNSServiceCreateConnection(&DNSSDMaster) != kDNSServiceErr_NoError)
   {
-    fputs("Error: Unable to initialize Bonjour.\n", stderr);
+    fputs("Error: Unable to initialize DNS-SD.\n", stderr);
     exit(1);
   }
 
@@ -2256,13 +2271,13 @@ dnssd_init(void)
 
   if ((DNSSDMaster = avahi_threaded_poll_new()) == NULL)
   {
-    fputs("Error: Unable to initialize Bonjour.\n", stderr);
+    fputs("Error: Unable to initialize DNS-SD.\n", stderr);
     exit(1);
   }
 
   if ((DNSSDClient = avahi_client_new(avahi_threaded_poll_get(DNSSDMaster), AVAHI_CLIENT_NO_FAIL, dnssd_client_cb, NULL, &error)) == NULL)
   {
-    fputs("Error: Unable to initialize Bonjour.\n", stderr);
+    fputs("Error: Unable to initialize DNS-SD.\n", stderr);
     exit(1);
   }
 
@@ -2499,8 +2514,9 @@ finish_document_uri(
   * Do we have a file to print?
   */
 
-  if (httpGetState(client->http) == HTTP_STATE_POST_RECV)
+  if (have_document_data(client))
   {
+    flush_document_data(client);
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "Unexpected document data following request.");
 
     goto abort_job;
@@ -2747,6 +2763,42 @@ finish_document_uri(
 
   copy_job_attributes(client, job, ra);
   cupsArrayDelete(ra);
+}
+
+
+/*
+ * 'flush_document_data()' - Safely flush remaining document data.
+ */
+
+static void
+flush_document_data(
+    ippeve_client_t *client)		/* I - Client */
+{
+  char	buffer[8192];			/* Read buffer */
+
+
+  if (httpGetState(client->http) == HTTP_STATE_POST_RECV)
+  {
+    while (httpRead2(client->http, buffer, sizeof(buffer)) > 0);
+  }
+}
+
+
+/*
+ * 'have_document_data()' - Determine whether we have more document data.
+ */
+
+static int				/* O - 1 if data is present, 0 otherwise */
+have_document_data(
+    ippeve_client_t *client)		/* I - Client */
+{
+  char temp;				/* Data */
+
+
+  if (httpGetState(client->http) != HTTP_STATE_POST_RECV)
+    return (0);
+  else
+    return (httpPeek(client->http, &temp, 1) > 0);
 }
 
 
@@ -3260,25 +3312,23 @@ ipp_create_job(ippeve_client_t *client)	/* I - Client */
 
 
  /*
-  * Validate print job attributes...
-  */
-
-  if (!valid_job_attributes(client))
-  {
-    httpFlush(client->http);
-    return;
-  }
-
- /*
   * Do we have a file to print?
   */
 
-  if (httpGetState(client->http) == HTTP_STATE_POST_RECV)
+  if (have_document_data(client))
   {
+    flush_document_data(client);
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST,
                 "Unexpected document data following request.");
     return;
   }
+
+ /*
+  * Validate print job attributes...
+  */
+
+  if (!valid_job_attributes(client))
+    return;
 
  /*
   * Create the job...
@@ -3716,7 +3766,7 @@ ipp_print_job(ippeve_client_t *client)	/* I - Client */
 
   if (!valid_job_attributes(client))
   {
-    httpFlush(client->http);
+    flush_document_data(client);
     return;
   }
 
@@ -3724,7 +3774,7 @@ ipp_print_job(ippeve_client_t *client)	/* I - Client */
   * Do we have a file to print?
   */
 
-  if (httpGetState(client->http) == HTTP_STATE_POST_SEND)
+  if (!have_document_data(client))
   {
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "No file in request.");
     return;
@@ -3764,7 +3814,7 @@ ipp_print_uri(ippeve_client_t *client)	/* I - Client */
 
   if (!valid_job_attributes(client))
   {
-    httpFlush(client->http);
+    flush_document_data(client);
     return;
   }
 
@@ -3797,6 +3847,7 @@ ipp_send_document(
 {
   ippeve_job_t		*job;		/* Job information */
   ipp_attribute_t	*attr;		/* Current attribute */
+  int			have_data;	/* Have document data? */
 
 
  /*
@@ -3805,26 +3856,28 @@ ipp_send_document(
 
   if ((job = find_job(client)) == NULL)
   {
+    flush_document_data(client);
     respond_ipp(client, IPP_STATUS_ERROR_NOT_FOUND, "Job does not exist.");
-    httpFlush(client->http);
     return;
   }
 
  /*
   * See if we already have a document for this job or the job has already
-  * in a non-pending state...
+  * in a terminating state...
   */
 
-  if (job->state > IPP_JSTATE_HELD)
+  have_data = have_document_data(client);
+
+  if ((job->filename || job->fd >= 0) && have_data)
   {
-    respond_ipp(client, IPP_STATUS_ERROR_NOT_POSSIBLE, "Job is not in a pending state.");
-    httpFlush(client->http);
+    flush_document_data(client);
+    respond_ipp(client, IPP_STATUS_ERROR_MULTIPLE_JOBS_NOT_SUPPORTED, "Multiple document jobs are not supported.");
     return;
   }
-  else if (job->filename || job->fd >= 0)
+  else if (job->state > IPP_JSTATE_HELD && have_data)
   {
-    respond_ipp(client, IPP_STATUS_ERROR_MULTIPLE_JOBS_NOT_SUPPORTED, "Multiple document jobs are not supported.");
-    httpFlush(client->http);
+    flush_document_data(client);
+    respond_ipp(client, IPP_STATUS_ERROR_NOT_POSSIBLE, "Job is not in a pending state.");
     return;
   }
 
@@ -3834,20 +3887,20 @@ ipp_send_document(
 
   if ((attr = ippFindAttribute(client->request, "last-document", IPP_TAG_ZERO)) == NULL)
   {
+    flush_document_data(client);
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "Missing required last-document attribute.");
-    httpFlush(client->http);
     return;
   }
   else if (ippGetGroupTag(attr) != IPP_TAG_OPERATION)
   {
+    flush_document_data(client);
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "The last-document attribute is not in the operation group.");
-    httpFlush(client->http);
     return;
   }
-  else if (ippGetValueTag(attr) != IPP_TAG_BOOLEAN || ippGetCount(attr) != 1 || !ippGetBoolean(attr, 0))
+  else if (ippGetValueTag(attr) != IPP_TAG_BOOLEAN || ippGetCount(attr) != 1)
   {
+    flush_document_data(client);
     respond_unsupported(client, attr);
-    httpFlush(client->http);
     return;
   }
 
@@ -3855,11 +3908,14 @@ ipp_send_document(
   * Validate document attributes...
   */
 
-  if (!valid_doc_attributes(client))
+  if (have_data && !valid_doc_attributes(client))
   {
-    httpFlush(client->http);
+    flush_document_data(client);
     return;
   }
+
+  if (!have_data && !job->filename)
+    job->state = IPP_JSTATE_ABORTED;
 
  /*
   * Then finish getting the document data and process things...
@@ -3878,7 +3934,8 @@ ipp_send_document(
 
   _cupsRWUnlock(&(client->printer->rwlock));
 
-  finish_document_data(client, job);
+  if (have_data)
+    finish_document_data(client, job);
 }
 
 
@@ -3901,44 +3958,39 @@ ipp_send_uri(ippeve_client_t *client)	/* I - Client */
   if ((job = find_job(client)) == NULL)
   {
     respond_ipp(client, IPP_STATUS_ERROR_NOT_FOUND, "Job does not exist.");
-    httpFlush(client->http);
     return;
   }
 
  /*
   * See if we already have a document for this job or the job has already
-  * in a non-pending state...
+  * in a non-terminating state...
   */
 
-  if (job->state > IPP_JSTATE_HELD)
-  {
-    respond_ipp(client, IPP_STATUS_ERROR_NOT_POSSIBLE, "Job is not in a pending state.");
-    httpFlush(client->http);
-    return;
-  }
-  else if (job->filename || job->fd >= 0)
+  if (job->filename || job->fd >= 0)
   {
     respond_ipp(client, IPP_STATUS_ERROR_MULTIPLE_JOBS_NOT_SUPPORTED, "Multiple document jobs are not supported.");
-    httpFlush(client->http);
+    return;
+  }
+  else if (job->state > IPP_JSTATE_HELD)
+  {
+    flush_document_data(client);
+    respond_ipp(client, IPP_STATUS_ERROR_NOT_POSSIBLE, "Job is not in a pending state.");
     return;
   }
 
   if ((attr = ippFindAttribute(client->request, "last-document", IPP_TAG_ZERO)) == NULL)
   {
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "Missing required last-document attribute.");
-    httpFlush(client->http);
     return;
   }
   else if (ippGetGroupTag(attr) != IPP_TAG_OPERATION)
   {
     respond_ipp(client, IPP_STATUS_ERROR_BAD_REQUEST, "The last-document attribute is not in the operation group.");
-    httpFlush(client->http);
     return;
   }
-  else if (ippGetValueTag(attr) != IPP_TAG_BOOLEAN || ippGetCount(attr) != 1 || !ippGetBoolean(attr, 0))
+  else if (ippGetValueTag(attr) != IPP_TAG_BOOLEAN || ippGetCount(attr) != 1)
   {
     respond_unsupported(client, attr);
-    httpFlush(client->http);
     return;
   }
 
@@ -3948,7 +4000,7 @@ ipp_send_uri(ippeve_client_t *client)	/* I - Client */
 
   if (!valid_doc_attributes(client))
   {
-    httpFlush(client->http);
+    flush_document_data(client);
     return;
   }
 
@@ -6408,7 +6460,7 @@ process_ipp(ippeve_client_t *client)	/* I - Client */
 		      name, ippGetString(uri, 0, NULL));
 	else if (client->operation_id != IPP_OP_GET_PRINTER_ATTRIBUTES && (status = authenticate_request(client)) != HTTP_STATUS_CONTINUE)
         {
-          httpFlush(client->http);
+          flush_document_data(client);
 
           return (respond_http(client, status, NULL, NULL, 0));
         }
@@ -6438,7 +6490,7 @@ process_ipp(ippeve_client_t *client)	/* I - Client */
 	      if (!respond_http(client, HTTP_STATUS_EXPECTATION_FAILED, NULL, NULL, 0))
 		return (0);
 
-	      httpFlush(client->http);
+	      flush_document_data(client);
 	      return (1);
 	    }
 	  }
@@ -7069,16 +7121,15 @@ process_state_message(
 
 
 /*
- * 'register_printer()' - Register a printer object via Bonjour.
+ * 'register_printer()' - Register a printer object via DNS-SD.
  */
 
 static int				/* O - 1 on success, 0 on error */
 register_printer(
-    ippeve_printer_t *printer,		/* I - Printer */
-    const char       *subtypes)		/* I - Service subtype(s) */
+    ippeve_printer_t *printer)		/* I - Printer */
 {
 #if defined(HAVE_DNSSD) || defined(HAVE_AVAHI)
-  ippeve_txt_t		ipp_txt;	/* Bonjour IPP TXT record */
+  ippeve_txt_t		ipp_txt;	/* DNS-SD IPP TXT record */
   int			i,		/* Looping var */
 			count;		/* Number of values */
   ipp_attribute_t	*color_supported,
@@ -7095,7 +7146,7 @@ register_printer(
 			*ptr;		/* Pointer into string */
 
 
-  if (!strcmp(subtypes, "off"))
+  if (printer->dnssd_subtypes && !strcmp(printer->dnssd_subtypes, "off"))
     return (1);
 
   color_supported           = ippFindAttribute(printer->attrs, "color-supported", IPP_TAG_BOOLEAN);
@@ -7140,10 +7191,34 @@ register_printer(
       break;
   }
 
+ /*
+  * Rename the service as needed...
+  */
+
+  if (printer->dnssd_collision)
+  {
+    char	new_dnssd_name[256];	/* New DNS-SD name */
+    const char	*uuid = ippGetString(printer_uuid, 0, NULL);
+					/* "printer-uuid" value */
+
+    _cupsRWLockWrite(&printer->rwlock);
+
+    snprintf(new_dnssd_name, sizeof(new_dnssd_name), "%s (%c%c%c%c%c%c)", printer->dnssd_name, toupper(uuid[39]), toupper(uuid[40]), toupper(uuid[41]), toupper(uuid[42]), toupper(uuid[43]), toupper(uuid[44]));
+
+    free(printer->dnssd_name);
+    printer->dnssd_name = strdup(new_dnssd_name);
+
+    fprintf(stderr, "DNS-SD name collision, trying new DNS-SD service name '%s'.\n", printer->dnssd_name);
+
+    _cupsRWUnlock(&printer->rwlock);
+
+    printer->dnssd_collision = 0;
+  }
 #endif /* HAVE_DNSSD || HAVE_AVAHI */
+
 #ifdef HAVE_DNSSD
-  DNSServiceErrorType	error;		/* Error from Bonjour */
-  char			regtype[256];	/* Bonjour service type */
+  DNSServiceErrorType	error;		/* Error from DNS-SD */
+  char			regtype[256];	/* DNS-SD service type */
   uint32_t		ifindex;	/* Interface index */
 
 
@@ -7178,9 +7253,12 @@ register_printer(
 
   ifindex = !strcmp(printer->hostname, "localhost") ? kDNSServiceInterfaceIndexLocalOnly : kDNSServiceInterfaceIndexAny;
 
+  if (printer->printer_ref)
+    DNSServiceRefDeallocate(printer->printer_ref);
+
   printer->printer_ref = DNSSDMaster;
 
-  if ((error = DNSServiceRegister(&(printer->printer_ref), kDNSServiceFlagsShareConnection, ifindex, printer->dnssd_name, "_printer._tcp", NULL /* domain */, NULL /* host */, 0 /* port */, 0 /* txtLen */, NULL /* txtRecord */, (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
+  if ((error = DNSServiceRegister(&(printer->printer_ref), kDNSServiceFlagsShareConnection | kDNSServiceFlagsNoAutoRename, ifindex, printer->dnssd_name, "_printer._tcp", NULL /* domain */, NULL /* host */, 0 /* port */, 0 /* txtLen */, NULL /* txtRecord */, (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
   {
     _cupsLangPrintf(stderr, _("Unable to register \"%s.%s\": %d"), printer->dnssd_name, "_printer._tcp", error);
     return (0);
@@ -7191,14 +7269,17 @@ register_printer(
   * advertise our IPP printer...
   */
 
+  if (printer->ipp_ref)
+    DNSServiceRefDeallocate(printer->ipp_ref);
+
   printer->ipp_ref = DNSSDMaster;
 
-  if (subtypes && *subtypes)
-    snprintf(regtype, sizeof(regtype), "_ipp._tcp,%s", subtypes);
+  if (printer->dnssd_subtypes && *(printer->dnssd_subtypes))
+    snprintf(regtype, sizeof(regtype), "_ipp._tcp,%s", printer->dnssd_subtypes);
   else
     strlcpy(regtype, "_ipp._tcp", sizeof(regtype));
 
-  if ((error = DNSServiceRegister(&(printer->ipp_ref), kDNSServiceFlagsShareConnection, ifindex, printer->dnssd_name, regtype, NULL /* domain */, NULL /* host */, htons(printer->port), TXTRecordGetLength(&ipp_txt), TXTRecordGetBytesPtr(&ipp_txt), (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
+  if ((error = DNSServiceRegister(&(printer->ipp_ref), kDNSServiceFlagsShareConnection | kDNSServiceFlagsNoAutoRename, ifindex, printer->dnssd_name, regtype, NULL /* domain */, NULL /* host */, htons(printer->port), TXTRecordGetLength(&ipp_txt), TXTRecordGetBytesPtr(&ipp_txt), (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
   {
     _cupsLangPrintf(stderr, _("Unable to register \"%s.%s\": %d"), printer->dnssd_name, regtype, error);
     return (0);
@@ -7210,14 +7291,17 @@ register_printer(
   * advertise our IPPS printer...
   */
 
+  if (printer->ipps_ref)
+    DNSServiceRefDeallocate(printer->ipps_ref);
+
   printer->ipps_ref = DNSSDMaster;
 
-  if (subtypes && *subtypes)
-    snprintf(regtype, sizeof(regtype), "_ipps._tcp,%s", subtypes);
+  if (printer->dnssd_subtypes && *(printer->dnssd_subtypes))
+    snprintf(regtype, sizeof(regtype), "_ipps._tcp,%s", printer->dnssd_subtypes);
   else
     strlcpy(regtype, "_ipps._tcp", sizeof(regtype));
 
-  if ((error = DNSServiceRegister(&(printer->ipps_ref), kDNSServiceFlagsShareConnection, ifindex, printer->dnssd_name, regtype, NULL /* domain */, NULL /* host */, htons(printer->port), TXTRecordGetLength(&ipp_txt), TXTRecordGetBytesPtr(&ipp_txt), (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
+  if ((error = DNSServiceRegister(&(printer->ipps_ref), kDNSServiceFlagsShareConnection | kDNSServiceFlagsNoAutoRename, ifindex, printer->dnssd_name, regtype, NULL /* domain */, NULL /* host */, htons(printer->port), TXTRecordGetLength(&ipp_txt), TXTRecordGetBytesPtr(&ipp_txt), (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
   {
     _cupsLangPrintf(stderr, _("Unable to register \"%s.%s\": %d"), printer->dnssd_name, regtype, error);
     return (0);
@@ -7229,9 +7313,12 @@ register_printer(
   * real port number to advertise our IPP printer...
   */
 
+  if (printer->http_ref)
+    DNSServiceRefDeallocate(printer->http_ref);
+
   printer->http_ref = DNSSDMaster;
 
-  if ((error = DNSServiceRegister(&(printer->http_ref), kDNSServiceFlagsShareConnection, ifindex, printer->dnssd_name, "_http._tcp,_printer", NULL /* domain */, NULL /* host */, htons(printer->port), 0 /* txtLen */, NULL /* txtRecord */, (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
+  if ((error = DNSServiceRegister(&(printer->http_ref), kDNSServiceFlagsShareConnection | kDNSServiceFlagsNoAutoRename, ifindex, printer->dnssd_name, "_http._tcp,_printer", NULL /* domain */, NULL /* host */, htons(printer->port), 0 /* txtLen */, NULL /* txtRecord */, (DNSServiceRegisterReply)dnssd_callback, printer)) != kDNSServiceErr_NoError)
   {
     _cupsLangPrintf(stderr, _("Unable to register \"%s.%s\": %d"), printer->dnssd_name, "_http._tcp,_printer", error);
     return (0);
@@ -7272,18 +7359,21 @@ register_printer(
 
   avahi_threaded_poll_lock(DNSSDMaster);
 
-  printer->ipp_ref = avahi_entry_group_new(DNSSDClient, dnssd_callback, NULL);
+  if (printer->dnssd_ref)
+    avahi_entry_group_free(printer->dnssd_ref);
 
-  avahi_entry_group_add_service_strlst(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_printer._tcp", NULL, NULL, 0, NULL);
+  printer->dnssd_ref = avahi_entry_group_new(DNSSDClient, dnssd_callback, printer);
+
+  avahi_entry_group_add_service_strlst(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_printer._tcp", NULL, NULL, 0, NULL);
 
  /*
   * Then register the _ipp._tcp (IPP)...
   */
 
-  avahi_entry_group_add_service_strlst(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipp._tcp", NULL, NULL, printer->port, ipp_txt);
-  if (subtypes && *subtypes)
+  avahi_entry_group_add_service_strlst(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipp._tcp", NULL, NULL, printer->port, ipp_txt);
+  if (printer->dnssd_subtypes && *(printer->dnssd_subtypes))
   {
-    char *temptypes = strdup(subtypes), *start, *end;
+    char *temptypes = strdup(printer->dnssd_subtypes), *start, *end;
 
     for (start = temptypes; *start; start = end)
     {
@@ -7293,7 +7383,7 @@ register_printer(
         end = start + strlen(start);
 
       snprintf(temp, sizeof(temp), "%s._sub._ipp._tcp", start);
-      avahi_entry_group_add_service_subtype(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipp._tcp", NULL, temp);
+      avahi_entry_group_add_service_subtype(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipp._tcp", NULL, temp);
     }
 
     free(temptypes);
@@ -7304,10 +7394,10 @@ register_printer(
   * _ipps._tcp (IPPS) for secure printing...
   */
 
-  avahi_entry_group_add_service_strlst(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipps._tcp", NULL, NULL, printer->port, ipp_txt);
-  if (subtypes && *subtypes)
+  avahi_entry_group_add_service_strlst(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipps._tcp", NULL, NULL, printer->port, ipp_txt);
+  if (printer->dnssd_subtypes && *(printer->dnssd_subtypes))
   {
-    char *temptypes = strdup(subtypes), *start, *end;
+    char *temptypes = strdup(printer->dnssd_subtypes), *start, *end;
 
     for (start = temptypes; *start; start = end)
     {
@@ -7317,7 +7407,7 @@ register_printer(
         end = start + strlen(start);
 
       snprintf(temp, sizeof(temp), "%s._sub._ipps._tcp", start);
-      avahi_entry_group_add_service_subtype(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipps._tcp", NULL, temp);
+      avahi_entry_group_add_service_subtype(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_ipps._tcp", NULL, temp);
     }
 
     free(temptypes);
@@ -7328,14 +7418,14 @@ register_printer(
   * Finally _http.tcp (HTTP) for the web interface...
   */
 
-  avahi_entry_group_add_service_strlst(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_http._tcp", NULL, NULL, printer->port, NULL);
-  avahi_entry_group_add_service_subtype(printer->ipp_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_http._tcp", NULL, "_printer._sub._http._tcp");
+  avahi_entry_group_add_service_strlst(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_http._tcp", NULL, NULL, printer->port, NULL);
+  avahi_entry_group_add_service_subtype(printer->dnssd_ref, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, printer->dnssd_name, "_http._tcp", NULL, "_printer._sub._http._tcp");
 
  /*
   * Commit it...
   */
 
-  avahi_entry_group_commit(printer->ipp_ref);
+  avahi_entry_group_commit(printer->dnssd_ref);
   avahi_threaded_poll_unlock(DNSSDMaster);
 
   avahi_string_list_free(ipp_txt);
@@ -7517,14 +7607,14 @@ respond_unsupported(
 static void
 run_printer(ippeve_printer_t *printer)	/* I - Printer */
 {
-  int		num_fds;		/* Number of file descriptors */
-  struct pollfd	polldata[3];		/* poll() data */
-  int		timeout;		/* Timeout for poll() */
-  ippeve_client_t	*client;		/* New client */
+  int			num_fds;	/* Number of file descriptors */
+  struct pollfd		polldata[3];	/* poll() data */
+  int			timeout;	/* Timeout for poll() */
+  ippeve_client_t	*client;	/* New client */
 
 
  /*
-  * Setup poll() data for the Bonjour service socket and IPv4/6 listeners...
+  * Setup poll() data for the DNS-SD service socket and IPv4/6 listeners...
   */
 
   polldata[0].fd     = printer->ipv4;
@@ -7546,12 +7636,7 @@ run_printer(ippeve_printer_t *printer)	/* I - Printer */
 
   for (;;)
   {
-    if (cupsArrayCount(printer->jobs))
-      timeout = 10;
-    else
-      timeout = -1;
-
-    if (poll(polldata, (nfds_t)num_fds, timeout) < 0 && errno != EINTR)
+    if (poll(polldata, (nfds_t)num_fds, 1000) < 0 && errno != EINTR)
     {
       perror("poll() failed");
       break;
@@ -7593,10 +7678,19 @@ run_printer(ippeve_printer_t *printer)	/* I - Printer */
       }
     }
 
+   /*
+    * Process DNS-SD messages...
+    */
+
 #ifdef HAVE_DNSSD
     if (polldata[2].revents & POLLIN)
       DNSServiceProcessResult(DNSSDMaster);
 #endif /* HAVE_DNSSD */
+
+#if defined(HAVE_DNSSD) || defined(HAVE_AVAHI)
+    if (printer->dnssd_collision)
+      register_printer(printer);
+#endif /* HAVE_DNSSD || HAVE_AVAHI */
 
    /*
     * Clean out old jobs...
@@ -8382,6 +8476,7 @@ valid_doc_attributes(
     memset(header, 0, sizeof(header));
     httpPeek(client->http, (char *)header, sizeof(header));
 
+    fprintf(stderr, "%s %s Auto-type header: %02X%02X%02X%02X%02X%02X%02X%02X\n", client->hostname, op_name, header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7]);
     if (!memcmp(header, "%PDF", 4))
       format = "application/pdf";
     else if (!memcmp(header, "%!", 2))
@@ -8390,7 +8485,7 @@ valid_doc_attributes(
       format = "image/jpeg";
     else if (!memcmp(header, "\211PNG", 4))
       format = "image/png";
-    else if (!memcmp(header, "RAS2", 4))
+    else if (!memcmp(header, "RaS2PwgR", 8))
       format = "image/pwg-raster";
     else if (!memcmp(header, "UNIRAST", 8))
       format = "image/urf";
