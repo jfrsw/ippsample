@@ -7780,6 +7780,7 @@ ipp_update_job_status(
   if ((attr = ippFindAttribute(client->request, "output-device-job-state", IPP_TAG_ENUM)) != NULL)
   {
     job->dev_state = (ipp_jstate_t)ippGetInteger(attr, 0);
+    job->state = job->dev_state;
     events |= SERVER_EVENT_JOB_STATE_CHANGED;
   }
 
